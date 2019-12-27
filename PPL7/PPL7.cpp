@@ -12,36 +12,30 @@
 
 using namespace std;
 
-/*
-typedef struct
-{
-	float x;
-	float y;
-} Point;*/
-
-typedef struct
+struct minResp
 {
 	int v;
 	float m;
 	int pj;
-} minResp;
+};
 
 const int OPER_UPDATE = 1;
 const int OPER_BUILD = 2;
 const int OPER_MIN = 3;
 const int OPER_EXIT = 4;
 const int OPER_INIT = 5;
+const int OPER_UKEY = 6;
 
-void readGraph();
-void writeMST();
-void initWorkers();
+void mReadGraph();
+void mWriteMST();
+void mInitWorkers();
 void release();
-void buildMST();
-void runBuildKey(bool* key, bool* mstSet);
-void runMinKey(bool* key, bool* mstSet);
-void buildKey(bool* key, bool* mstSet, int pfrom, int count);
-void minKey(int& u, float& m, int& pj, bool* key, bool* mstSet, int pfrom, int count);
-//void writeLog();
+void mBuildMST();
+void mRunBuildKey();
+void mRunMinKey();
+void wBuildKey();
+minResp wMinKey();
+void worker();
 
 int procCount = 3;
 int curRank;
@@ -52,15 +46,12 @@ int* result;
 int* minKeys;
 int* jj;
 float* mm;
-//Point* points;
 bool* key;
 bool* mstSet;
 int* partsSize;
 int* starts;
 int partFrom;
 int partSize;
-
-void worker();
 
 int main(int argc, char* argv[])
 {
@@ -70,25 +61,25 @@ int main(int argc, char* argv[])
 	MPI_Comm_rank(MPI_COMM_WORLD, &curRank);
 	MPI_Comm_size(MPI_COMM_WORLD, &procCount);
 	if (curRank == 0) {
-		readGraph();
+		mReadGraph();
 		minKeys = new int[procCount];
 		mm = new float[procCount];
 		jj = new int[procCount];
 		key = new bool[n];
 		mstSet = new bool[n];
 		result = new int[n];
-		initWorkers();
-		buildMST();
-		writeMST();
-		release();
+		mInitWorkers();
+		mBuildMST();
+		mWriteMST();
 	}
 	else {
 		worker();
 	}
 	MPI_Finalize();
+	release();
 }
 
-void initWorkers() {
+void mInitWorkers() {
 	int nominalCount = n / (procCount - 1);
 	partsSize = new int[procCount];
 	starts = new int[procCount];
@@ -98,7 +89,7 @@ void initWorkers() {
 			count = n - startIndex;
 		}
 		partsSize[i] = count;
-		starts[i]] = startIndex;
+		starts[i] = startIndex;
 	}
 	for (int i = 1; i < procCount; i++) {
 		int oper = OPER_INIT;
@@ -107,36 +98,73 @@ void initWorkers() {
 		MPI_Send(&starts[i], 1, MPI_INT, i, 0, MPI_COMM_WORLD);
 		MPI_Send(&partsSize[i], 1, MPI_INT, i, 0, MPI_COMM_WORLD);
 		MPI_Send(graph, n * n, MPI_FLOAT, i, 0, MPI_COMM_WORLD);
-		key = new bool[n];
-		mstSet = new bool[n];
+	}
+}
+
+void mUpdateWorkers(int u) {
+	int uu = u;
+	for (int i = 1; i < procCount; i++) {
+		int oper = OPER_UPDATE;
+		MPI_Send(&oper, 1, MPI_INT, i, 0, MPI_COMM_WORLD);
+		MPI_Send(&uu, 1, MPI_INT, i, 0, MPI_COMM_WORLD);
+	}
+}
+
+void mUpdateKey() {
+	for (int i = 1; i < procCount; i++) {
+		int oper = OPER_UKEY;
+		MPI_Send(&oper, 1, MPI_INT, i, 0, MPI_COMM_WORLD);
+		MPI_Status status;
+		MPI_Recv(&key[starts[i]], partsSize[i], MPI_C_BOOL, i, 0, MPI_COMM_WORLD, &status);
+	}
+	for (int i = 1; i < procCount; i++) {
+		MPI_Send(key, n, MPI_C_BOOL, i, 0, MPI_COMM_WORLD);
 	}
 }
 
 void worker() {
-	int oper;
-	MPI_Status status;
-	MPI_Recv(&oper, 1, MPI_INT, 0, 0, MPI_COMM_WORLD, &status);
-	switch (oper) {
-	case OPER_INIT:
-		MPI_Recv(&n, 1, MPI_INT, 0, 0, MPI_COMM_WORLD, &status);
-		MPI_Recv(&partFrom, 1, MPI_INT, 0, 0, MPI_COMM_WORLD, &status);
-		MPI_Recv(&partSize, 1, MPI_INT, 0, 0, MPI_COMM_WORLD, &status);
-		graph = new float[n * n];
-		MPI_Recv(graph, n * n, MPI_FLOAT, 0, 0, MPI_COMM_WORLD, &status);
-		break;
-	case OPER_EXIT:
-		return;
-		break;
-	case OPER_BUILD:
-		break;
-	case OPER_MIN:
-		break;
-	case OPER_UPDATE:
-		break;
+	bool flag = true;
+	while (flag) {
+		int oper;
+		MPI_Status status;
+		MPI_Recv(&oper, 1, MPI_INT, 0, 0, MPI_COMM_WORLD, &status);
+		switch (oper) {
+		case OPER_INIT:
+			MPI_Recv(&n, 1, MPI_INT, 0, 0, MPI_COMM_WORLD, &status);
+			MPI_Recv(&partFrom, 1, MPI_INT, 0, 0, MPI_COMM_WORLD, &status);
+			MPI_Recv(&partSize, 1, MPI_INT, 0, 0, MPI_COMM_WORLD, &status);
+			graph = new float[n * n];
+			MPI_Recv(graph, n * n, MPI_FLOAT, 0, 0, MPI_COMM_WORLD, &status);
+			for (int i = 0; i < n; i++)
+			{
+				key[i] = false;
+				mstSet[i] = false;
+			}
+			mstSet[0] = true;
+			break;
+		case OPER_EXIT:
+			return;
+			break;
+		case OPER_BUILD:
+			wBuildKey();
+			break;
+		case OPER_MIN:
+			minResp res = wMinKey();
+			break;
+		case OPER_UPDATE:
+			int u;
+			MPI_Recv(&u, 1, MPI_INT, 0, 0, MPI_COMM_WORLD, &status);
+			mstSet[u] = true;
+			break;
+		case OPER_UKEY:
+			MPI_Send(&key[partFrom], partSize, MPI_C_BOOL, 0, 0, MPI_COMM_WORLD);
+			MPI_Recv(key, n, MPI_C_BOOL, 0, 0, MPI_COMM_WORLD, &status);
+			break;
+		}
 	}
 }
 
-void readGraph()
+void mReadGraph()
 {
 	cout << "Reading graph ..." << endl;
 	ifstream inf("graph.bin", ios::in | ios::binary);
@@ -171,7 +199,7 @@ void readGraph()
 	delete[] paths;
 }
 
-void buildMST()
+void mBuildMST()
 {
 	for (int i = 0; i < n; i++)
 	{
@@ -183,8 +211,9 @@ void buildMST()
 	result[0] = -1;
 	for (int i = 1; i < n; i++)
 	{
-		runBuildKey(key, mstSet);
-		runMinKey(key, mstSet);
+		mRunBuildKey();
+		mUpdateKey();
+		mRunMinKey();
 		int u = 0;
 		int ji = 0;
 		float mmKey = FLT_MAX;
@@ -197,69 +226,36 @@ void buildMST()
 		}
 		result[u] = ji;
 		mstSet[u] = true;
+		mUpdateWorkers(u);
 	}
 	delete[] key;
 	delete[] mstSet;
 }
 
-void runBuildKey(bool* key, bool* mstSet)
+void mRunBuildKey()
 {
-
-	//int oStartIndex = startIndex;
-	//int oCount = count;
-	MPI_Send(&oper, 1, MPI_INT, i, 0, MPI_COMM_WORLD);
-	//MPI_Send(&oStartIndex, 1, MPI_INT, i, 0, MPI_COMM_WORLD);
-	//MPI_Send(&oCount, 1, MPI_INT, i, 0, MPI_COMM_WORLD);
-	//MPI_Send(&key[oStartIndex], count, MPI_C_BOOL, i, 0, MPI_COMM_WORLD);
-	//MPI_Send(&mstSet[oStartIndex], count, MPI_C_BOOL, i, 0, MPI_COMM_WORLD);
-	//threads[i] = thread(buildKey, key, mstSet, startIndex, count);
-	if (count != nominalCount)
-	{
-		break;
-	}
-
-	for (int i = 1; i < procCount; i++)
-	{
-		int t;
-		MPI_Status status;
-		MPI_Recv(&t, 1, MPI_INT, i, 0, MPI_COMM_WORLD, &status);
-	}
-}
-
-void runMinKey(bool* key, bool* mstSet)
-{
-	int nominalCount = n / (procCount - 1);
-	for (int startIndex = 0, i = 1; startIndex < n; startIndex += nominalCount, i++)
-	{
-		int count = nominalCount;
-		if (startIndex + nominalCount < n && startIndex + nominalCount * 2 >= n)
-		{
-			count = n - startIndex;
-		}
-		int oper = OPER_MIN;
-		int oStartIndex = startIndex;
-		int oCount = count;
+	int oper = OPER_BUILD;
+	for (int i = 1; i < procCount; i++) {
 		MPI_Send(&oper, 1, MPI_INT, i, 0, MPI_COMM_WORLD);
-		MPI_Send(&oStartIndex, 1, MPI_INT, i, 0, MPI_COMM_WORLD);
-		MPI_Send(&oCount, 1, MPI_INT, i, 0, MPI_COMM_WORLD);
-		MPI_Send(&key[oStartIndex], count, MPI_C_BOOL, i, 0, MPI_COMM_WORLD);
-		MPI_Send(&mstSet[oStartIndex], count, MPI_C_BOOL, i, 0, MPI_COMM_WORLD);
-		//threads[i] = thread(minKey, ref(minKeys[i]), ref(mm[i]), ref(jj[i]), key, mstSet, startIndex, count);
-		if (count != nominalCount)
-		{
-			break;
-		}
-	}
-	for (int i = 0; i < procCount; i++)
-	{
-		//threads[i].join();
 	}
 }
 
-void buildKey(int pfrom, int count)
+void mRunMinKey()
+{
+	int oper = OPER_MIN;
+	for (int i = 1; i < procCount; i++) {
+		MPI_Send(&oper, 1, MPI_INT, i, 0, MPI_COMM_WORLD);
+
+	}
+	for (int i = 1; i < procCount; i++) {
+
+	}
+}
+
+void wBuildKey()
 {
 	int k = 0;
-	for (int i = pfrom; k < count; i++, k++)
+	for (int i = partFrom; k < partSize; i++, k++)
 	{
 		if (mstSet[i])
 		{
@@ -285,13 +281,13 @@ void buildKey(int pfrom, int count)
 	}
 }
 
-minResp minKey(int pfrom, int count)
+minResp wMinKey()
 {
 	float min = FLT_MAX;
 	int minIndex = 0;
 	int jetIndex = 0;
 	int k = 0;
-	for (int i = pfrom; k < count; i++, k++)
+	for (int i = partFrom; k < partSize; i++, k++)
 	{
 		if (key[i])
 		{
@@ -314,9 +310,10 @@ minResp minKey(int pfrom, int count)
 	result.v = minIndex;
 	result.m = min;
 	result.pj = jetIndex;
+	return result;
 }
 
-void writeMST()
+void mWriteMST()
 {
 	cout << "Writing mst ..." << endl;
 	ofstream outf("mst.bin", ios::out | ios::binary);
@@ -334,7 +331,6 @@ void release()
 {
 	delete[] graph;
 	delete[] result;
-	delete[] points;
 	delete[] minKeys;
 	delete[] mm;
 	delete[] jj;
